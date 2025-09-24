@@ -1,12 +1,14 @@
 # C++ MQTT CLI Client for House Remote Control
 
-This project is a simple C++ command-line client for controlling smart home devices via MQTT.
+This project is a simple C++ command-line client with 2 functions: 
+* Recieve Temperature from the microcontroller
+* Turn LED ON or OFF
 
 ## Features
 
 - Connects to an MQTT broker
 - Publishes control messages (e.g., turn lights on/off)
-- Subscribes to device status topics
+- Subscribes to device temperature topics
 
 ## Requirements
 
@@ -31,7 +33,3 @@ make
 ## Configuration
 
 Edit the source or use command-line arguments to set broker address, topics, and messages.
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
