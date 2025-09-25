@@ -9,8 +9,17 @@
 
 #include "mqtt/async_client.h"
 
+#include "ftxui/component/captured_mouse.hpp"  // for ftxui
+#include "ftxui/component/component.hpp"  // for Button, Horizontal, Renderer
+#include "ftxui/component/component_base.hpp"      // for ComponentBase
+#include "ftxui/component/screen_interactive.hpp"  // for ScreenInteractive
+#include "ftxui/dom/elements.hpp"  // for separator, gauge, text, Element, operator|, vbox, border
+
+
+
 using namespace std;
 using namespace std::chrono;
+using namespace ftxui;
 
 /////////////////////////////////////////////////////////////////////////////
 const std::string DFLT_SERVER_ADDRESS{"tcp://eu1.cloud.thethings.network:1883"};
@@ -19,6 +28,40 @@ const string mqqt_username = "itp-project-1@ttn";
 const string device_name = "uno-0004a30b001c1b03";
 
 /////////////////////////////////////////////////////////////////////////////
+
+atomic_int value = 50;
+atomic_bool led_status = false;
+
+// This is a helper function to create a button with a custom style.
+// The style is defined by a lambda function that takes an EntryState and
+// returns an Element.
+// We are using `center` to center the text inside the button, then `border` to
+// add a border around the button, and finally `flex` to make the button fill
+// the available space.
+ButtonOption Style() {
+  auto option = ButtonOption::Animated();
+  option.transform = [](const EntryState& s) {
+    auto element = text(s.label);
+    if (s.focused) {
+      element |= bold;
+    }
+    return element | center | borderEmpty | flex;
+  };
+  return option;
+}
+
+void publish(mqtt::async_client_ptr client, const string topic, const string payload) {
+    auto msg = mqtt::make_message(topic, payload);
+    msg->set_qos(1);
+    client->publish(msg);
+    led_status = (payload == "1");
+}
+
+void set_led_status(mqtt::async_client_ptr client, bool status) {
+    string topic = "v3/" + mqqt_username + "/devices/" + device_name + "/down/replace";
+    string payload = status? "{\"downlinks\":[{\"f_port\": 15,\"frm_payload\":\"vu8=\",\"priority\": \"NORMAL\"}]}" : "0";
+    publish(client, topic, payload);
+}
 
 const char* api_key;
 int main(int argc, char* argv[])
@@ -66,28 +109,46 @@ int main(int argc, char* argv[])
         // Start another thread to read incoming topics
         std::thread{[client] {
             while (true) {
-            cout << "Waiting for a message\n";
             auto msg = client->consume_message();
-            cout << "Message recieved\n";
             if (!msg) {
                 // Exit if the consumer was shut down
                 if (client->consumer_closed())
                     break;
-
-                // Otherwise let auto-reconnect deal with it.
-                cout << "Disconnect detected. Attempting an auto-reconnect." << endl;
                 continue;
             }
-
-            cout << msg->get_topic() << ": " << msg->to_string() << endl;
         }
         }}.detach();
         
-        string user_input;
 
-        while (user_input != "exit") {
-            
-        }
+        value = 50;
+        led_status = false;
+
+        // clang-format off
+        auto btn_led_on = Button("ON", [&] { std::thread(set_led_status, client, true).detach(); }, Style());
+        auto btn_led_off = Button("OFF", [&] { std::thread(set_led_status, client, false).detach(); }, Style());
+        // clang-format on
+      
+        // The tree of components. This defines how to navigate using the keyboard.
+        // The selected `row` is shared to get a grid layout.
+        int row = 0;
+        auto buttons = Container::Vertical({
+            Container::Horizontal({btn_led_on, btn_led_off}, &row) | flex,
+        });
+      
+        // Modify the way to render them on screen:
+        auto component = Renderer(buttons, [&] {
+          return vbox({
+                    text("LED = " + std::to_string(led_status)),
+                    separator(),
+                    buttons->Render() | flex,
+                }) |
+                flex | border;
+        });
+      
+        auto screen = ScreenInteractive::FitComponent();
+        screen.Loop(component);
+
+
 
         client->stop_consuming();
         // Close the counter and wait for the publisher thread to complete
