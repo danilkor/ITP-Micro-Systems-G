@@ -21,7 +21,7 @@ This project is a simple C++ command-line client with 2 functions:
 ```bash
 mkdir build && cd build
 cmake ..
-make
+cmake -build .
 ```
 
 ## Usage

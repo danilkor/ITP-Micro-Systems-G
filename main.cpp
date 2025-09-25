@@ -63,149 +63,66 @@
 using namespace std;
 using namespace std::chrono;
 
-const std::string DFLT_SERVER_ADDRESS{"mqtt://eu1.cloud.thethings.network:1883"};
-const std::string CLIENT_ID{"multithr_pub_sub_cpp"};
+const std::string DFLT_SERVER_ADDRESS{"tcp://eu1.cloud.thethings.network:1883"};
+const std::string CLIENT_ID{"itp-team-1b0123314213124123"};
+const string mqqt_username = "itp-project-1@ttn";
+const string device_name = "uno-0004a30b001c1b03";
 
 /////////////////////////////////////////////////////////////////////////////
 
-/**
- * A thread-safe counter that can be used to occasionally signal a waiter on
- * every 10th increment.
- */
-class multithr_counter
-{
-    using guard = std::unique_lock<std::mutex>;
-
-    size_t count_;
-    bool closed_;
-    mutable bool ready_;
-    mutable std::condition_variable cond_;
-    mutable std::mutex lock_;
-
-public:
-    // Declare a pointer type for sharing a counter between threads
-    using ptr_t = std::shared_ptr<multithr_counter>;
-
-    // Create a new thread-safe counter with an initial count of zero.
-    multithr_counter() : count_(0), closed_(false), ready_(false) {}
-
-    // Determines if the counter has been closed.
-    bool closed() const
-    {
-        guard g(lock_);
-        return closed_;
-    }
-
-    // Close the counter and signal all waiters.
-    void close()
-    {
-        guard g(lock_);
-        closed_ = ready_ = true;
-        cond_.notify_all();
-    }
-
-    // Increments the count, and then signals once every 10 messages.
-    void incr()
-    {
-        guard g(lock_);
-        if (closed_)
-            throw string("Counter is closed");
-        if (++count_ % 10 == 0) {
-            ready_ = true;
-            g.unlock();
-            cond_.notify_all();
-        }
-    }
-
-    // This will block the caller until at least 10 new messages received.
-    size_t get_count() const
-    {
-        guard g(lock_);
-        cond_.wait(g, [this] { return ready_; });
-        ready_ = false;
-        return count_;
-    }
-};
-
-/////////////////////////////////////////////////////////////////////////////
-
-// The MQTT publisher function will run in its own thread.
-// It runs until the receiver thread closes the counter object.
-void publisher_func(mqtt::async_client_ptr cli, multithr_counter::ptr_t counter)
-{
-    while (true) {
-        size_t n = counter->get_count();
-        if (counter->closed())
-            break;
-
-        string payload = std::to_string(n);
-        cli->publish("events/count", payload)->wait();
-    }
-}
-
-/////////////////////////////////////////////////////////////////////////////
-
+const char* api_key;
 int main(int argc, char* argv[])
 {
-    string address = (argc > 1) ? string(argv[1]) : DFLT_SERVER_ADDRESS;
+    // Get the API key
+    api_key = getenv("TTN_API_KEY");
+    if (!api_key) {
+        cerr << "Error: Please set the environment variable TTN_API_KEY";
+        exit(1);
+    } else {
+        cout << "Using API key: " << string(api_key).substr(0, 8) << "..." << endl;
+    }
+
+    string address = DFLT_SERVER_ADDRESS;
 
     // Create an MQTT client using a smart pointer to be shared among threads.
-    auto cli = std::make_shared<mqtt::async_client>(address, CLIENT_ID);
-
-    // Make a counter object also with a shared pointer.
-    auto counter = std::make_shared<multithr_counter>();
+    auto client = std::make_shared<mqtt::async_client>(address, CLIENT_ID);
 
     // Connect options for a persistent session and automatic reconnects.
     auto connOpts = mqtt::connect_options_builder()
                         .clean_session(false)
+                        .user_name(mqqt_username)
+                        .password(api_key)
                         .automatic_reconnect(seconds(2), seconds(30))
                         .finalize();
 
-    auto TOPICS = mqtt::string_collection::create({"data/#", "command"});
+    auto TOPICS = mqtt::string_collection::create({"#","data"});
     const vector<int> QOS{0, 1};
 
     try {
         // Start consuming _before_ connecting, because we could get a flood
         // of stored messages as soon as the connection completes since
         // we're using a persistent (non-clean) session with the broker.
-        cli->start_consuming();
+        client->start_consuming();
 
         cout << "Connecting to the MQTT server at " << address << "..." << flush;
-        auto rsp = cli->connect(connOpts)->get_connect_response();
+        auto rsp = client->connect(connOpts)->get_connect_response();
         cout << "OK\n" << endl;
-
-        cout << "Now start an application such as 'async_publish_time'\n"
-             << "that publishes to a 'data/' topic...\n"
-             << endl;
 
         // Subscribe if this is a new session with the server
         if (!rsp.is_session_present())
-            cli->subscribe(TOPICS, QOS);
+            client->subscribe(TOPICS, QOS);
 
-        // Start the publisher thread
 
-        std::thread publisher(publisher_func, cli, counter);
+        // Start another thread to read incoming topics
 
-        // Start another thread to shut us down after a minute
-
-        std::thread{[cli] {
-            this_thread::sleep_for(30s);
-            cout << "Signaling the consumer to stop." << endl;
-            cli->stop_consuming();
-        }}.detach();
-
-        // Consume messages in this thread
-
-        // Remember that with the message consumer, we can't detect a
-        // reconnect We would need to register a connect callback or use the
-        // event consumer.
-
-        while (true) {
-            auto msg = cli->consume_message();
-
+        std::thread{[client] {
+            while (true) {
+            cout << "Waiting for a message\n";
+            auto msg = client->consume_message();
+            cout << "Message recieved\n";
             if (!msg) {
                 // Exit if the consumer was shut down
-                if (cli->consumer_closed())
+                if (client->consumer_closed())
                     break;
 
                 // Otherwise let auto-reconnect deal with it.
@@ -213,24 +130,23 @@ int main(int argc, char* argv[])
                 continue;
             }
 
-            if (msg->get_topic() == "command" && msg->to_string() == "exit") {
-                cout << "Exit command received" << endl;
-                break;
-            }
-
             cout << msg->get_topic() << ": " << msg->to_string() << endl;
-            counter->incr();
+        }
+        }}.detach();
+        
+        string user_input;
+
+        while (user_input != "exit") {
+            
         }
 
+        client->stop_consuming();
         // Close the counter and wait for the publisher thread to complete
         cout << "\nShutting down..." << flush;
-        counter->close();
-        publisher.join();
 
         // Disconnect
-
         cout << "OK\nDisconnecting..." << flush;
-        cli->disconnect();
+        client->disconnect();
         cout << "OK" << endl;
     }
     catch (const mqtt::exception& exc) {
