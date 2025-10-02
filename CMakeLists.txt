@@ -15,7 +15,8 @@ FetchContent_MakeAvailable(ftxui)
 find_library(PAHO_MQTT_C paho-mqtt3as REQUIRED)
 find_library(PAHO_MQTT_CPP paho-mqttpp3 REQUIRED)
 find_package(Threads REQUIRED) # For pthread
-
+find_package(nlohmann_json 3.12.0 REQUIRED)
+target_link_libraries(client PRIVATE nlohmann_json::nlohmann_json)
 
 
 target_link_libraries(client PRIVATE
