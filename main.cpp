@@ -32,8 +32,8 @@ const string device_name = "uno-0004a30b001c1b03";
 /////////////////////////////////////////////////////////////////////////////
 const string downlink_topic = "v3/" + mqqt_username + "/devices/" + device_name + "/down/push";
 const string uplink_topic = "v3/" + mqqt_username + "/devices/" + device_name + "/up";
-atomic_int last_temp = 0;
-atomic_bool led_status = false;
+atomic<float> last_temp = 0;
+atomic_int led_status = 0;
 
 // This is a helper function to create a button with a custom style.
 // The style is defined by a lambda function that takes an EntryState and
@@ -58,22 +58,31 @@ ButtonOption Style()
 
 void publish(mqtt::async_client_ptr client, const string topic, const string payload)
 {
-    cout << payload << "\n";
     auto msg = mqtt::make_message(topic, payload);
     msg->set_qos(1);
     client->publish(msg);
-    led_status = (payload == "1");
 }
 
 void set_led_status(mqtt::async_client_ptr client, bool status)
 {
     json json_payload;
     json_payload["downlinks"][0] = {{"f_port", 15},
-                                  {"frm_payload", {{"app", "building"}, {"type", "ledcontrol"}, {"led", (int)status}}},
+                                  {"decoded_payload", {{"app", "building"}, {"type", "ledcontrol"}, {"led", (int)status}}},
                                   {"priority", "NORMAL"}};
-    json_payload["downlinks"][0]["frm_payload"] = json_payload["downlinks"][0]["frm_payload"].dump();
-    cout << json_payload["downlinks"][0]["frm_payload"];
     publish(client, downlink_topic, json_payload.dump());
+}
+
+void analyse_msg(string msg)
+{
+    auto message = json::parse(msg);
+    // LED status
+    if (message["uplink_message"]["decoded_payload"]["type"] == "ledstatus")
+    {
+        led_status = message["uplink_message"]["decoded_payload"]["led"];
+    } else if (message["uplink_message"]["decoded_payload"]["type"] == "temp")
+    {
+        last_temp = message["uplink_message"]["decoded_payload"]["value"];
+    }
 }
 
 const char *api_key;
@@ -109,6 +118,8 @@ int main(int argc, char *argv[])
 
     try
     {
+        auto screen = ScreenInteractive::FitComponent();
+
         // Start consuming _before_ connecting, because we could get a flood
         // of stored messages as soon as the connection completes since
         // we're using a persistent (non-clean) session with the broker.
@@ -124,7 +135,7 @@ int main(int argc, char *argv[])
             client->subscribe(TOPICS, QOS);
 
         // Start another thread to read incoming topics
-        std::thread{[client]
+        std::thread{[client, &screen]
                     {
                         while (true)
                         {
@@ -136,15 +147,11 @@ int main(int argc, char *argv[])
                                     break;
                                 continue;
                             }
-                            auto parsed = json::parse(msg->to_string());
-                            cout << parsed << "\n";
+                            analyse_msg(msg->to_string());
+                            screen.PostEvent(ftxui::Event::Custom);
                         }
                     }}
             .detach();
-
-        // Set default values
-        last_temp = 50;
-        led_status = false;
 
         // clang-format off
         auto btn_led_on = Button("ON", [&] { std::thread(set_led_status, client, true).detach(); }, Style());
@@ -159,18 +166,18 @@ int main(int argc, char *argv[])
         });
 
         // Modify the way to render them on screen:
-        auto component = Renderer(buttons, [&]
+        auto ui_renderer = Renderer(buttons, [&]
                                   { return vbox({
-                                               text("LED = " + std::to_string(led_status)),
+                                               text("TEMP = " + std::to_string(std::round(last_temp*10)/10).substr(0, std::to_string(std::round(last_temp*10)/10).find('.') + 2) + "°C"),
+                                               text(std::string("LED = ") + (led_status == 0 ? "OFF" : "ON")),
                                                separator(),
                                                buttons->Render() | flex,
                                            }) |
                                            flex | border; });
 
-        auto screen = ScreenInteractive::FitComponent();
-        screen.Loop(component);
-
         
+        screen.Loop(ui_renderer);
+
         client->stop_consuming();
         // Close the counter and wait for the publisher thread to complete
         cout << "\nShutting down..." << flush;
